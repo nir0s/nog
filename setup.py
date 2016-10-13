@@ -21,7 +21,7 @@ setup(
     description='nog complements git',
     long_description=read('README.rst'),
     packages=['nog'],
-    entry_points={'console_scripts': ['nog = nog:main']},
+    entry_points={'console_scripts': ['nog = nog.nog:main']},
     install_requires=[
         "click==6.6",
         "tinydb==3.2.1",
