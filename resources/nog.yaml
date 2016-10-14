@@ -1,0 +1,8 @@
+workflows:
+  default:
+    - checkout
+    - commit
+    - push
+    - squash
+    - rebase
+    - push

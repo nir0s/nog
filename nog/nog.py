@@ -40,8 +40,14 @@
 # nog push [-f]
 # nog stop
 
+# import os
+# import pkg_resources
 
 import click
+from tinydb import Query
+
+# import nog
+from . import storage
 
 
 @click.group(name='nog')
@@ -54,24 +60,80 @@ def main():
 def init():
     """Initialize a nog working env
     """
+    # nog_home = os.path.expanduser(os.path.join('~', '.nog'))
+    # nog_init_file_path = os.path.join(nog_home, 'nog.yaml')
+    # nog_init_file = pkg_resources.resource_string(
+    #     nog.__name__, 'resources/nog.yaml')
+    # with open(nog_init_file_path, 'w') as f:
+    #     f.write(nog_init_file)
+    #     f.write(os.linesep)
+
+    click.echo('Initializing work env...')
+    path = storage.init()
+    click.echo('Initialized {0}'.format(path))
 
 
 @main.command()
-def add():
+@click.argument('SOURCE')
+@click.option('-n',
+              '--name',
+              help="The repository's name")
+@click.option('-t',
+              '--tag',
+              multiple=True,
+              help="A tag to assign to the repo")
+def add(source, name, tag):
     """Add a single or multiple repositories to manage
     """
+    name = name or _get_repo_name(source)
+    db = storage.load()
+    repos = db.table('repos')
+    repos.insert({'name': name, 'source': source, 'tags': list(tag)})
+    click.echo('Added repository {0}'.format(source))
+
+
+def _get_repo_name(source):
+    return
 
 
 @main.command()
-def tag():
+@click.argument('REPO_NAME')
+@click.option('-t',
+              '--tag',
+              multiple=True,
+              help="A tag to assign to the repo")
+def tag(repo_name, tag):
     """Tag a single or multiple repositories managed by nog
     """
+    db = storage.load('repos')
+    repo = Query()
+    db.update({'tags': list(tag)}, repo.name == repo_name)
+
+
+def _prettify_list(items):
+    """Return a human readable format of a list.
+
+    Example:
+
+    Available Keys:
+      - my_first_key
+      - my_second_key
+    """
+    assert isinstance(items, list)
+
+    keys_list = 'Available Keys:'
+    for item in items:
+        keys_list += '\n  - {0}'.format(item)
+    return keys_list
 
 
 @main.command(name='list')
 def _list():
     """List all repositories/features
     """
+    db = storage.load('repos')
+    repos = db.search(Query().name.matches('.*'))
+    click.echo(_prettify_list(repos))
 
 
 @main.command()
