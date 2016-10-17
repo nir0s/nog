@@ -140,7 +140,7 @@ def add(source, tag, method):
 
     click.echo('Analyzing source {0}'.format(source))
     source = os.path.expanduser(source)
-    if '://' or 'git@' in source:
+    if ('://' or 'git@') in source:
         name = _get_name_from_git_url(source)
         repo_path = os.path.join(storage.NOG_HOME, name)
     elif os.path.isdir(source):
@@ -156,6 +156,10 @@ def add(source, tag, method):
         if '/' in source:
             name = source
             repo_path = os.path.join(storage.NOG_HOME, name)
+            # TODO: Fix if a repo was already cloned in, for example ssh,
+            # and then removed, re-adding it with another method will not work
+            # as the remote origin is still the same for the previously cloned
+            # repo.
             if method == 'ssh':
                 source = 'git@github.com:{0}.git'.format(source)
             else:
@@ -180,6 +184,7 @@ def add(source, tag, method):
 
 
 def _get_name_from_git_url(source):
+    # TODO: try urlparse, then try regex on
     if '://' in source:
         return os.path.splitext(urlparse(source).path.lstrip('/'))[0]
     elif 'git@' in source:
@@ -195,10 +200,20 @@ def remove(repo_name):
     """
     db = storage.load('repos')
     query = Query().name == repo_name
-    repo = db.get(query)
+    assert_repo_exists(repo_name)
+    db.remove(query)
+
+
+def assert_repo_exists(repo_name):
+    repo = _get_repo(repo_name)
     if not repo:
         sys.exit('Repo {0} does not exist'.format(repo_name))
-    db.remove(query)
+
+
+def assert_feature_exists(feature_name):
+    feature = _get_feature(feature_name)
+    if not feature:
+        sys.exit('Feature {0} does not exist'.format(feature_name))
 
 
 @main.command()
@@ -210,8 +225,11 @@ def remove(repo_name):
 def tag(repo_name, tag):
     """Tag a single or multiple repositories managed by nog
     """
+    click.echo('Appending tags {0}...'.format(tag))
     db = storage.load('repos')
-    db.update({'tags': list(tag)}, Query().name == Query())
+    query = Query().name == repo_name
+    assert_repo_exists(repo_name)
+    db.update(dict(tags=list(tag)), query)
 
 
 def _prettify_list(items, title='Repos:'):
@@ -279,18 +297,44 @@ def _list():
     click.echo(_prettify_list(repos))
 
 
-@main.command(name='get')
-@click.argument('REPO_NAME')
-@jsonify_option
-def _get(repo_name, jsonify):
-    """Retrieve a repository's info
-    """
+def _get_repo(repo_name):
     db = storage.load('repos')
     repo = db.get(Query().name == repo_name)
+    return repo
+
+
+def _get_feature(feature_name):
+    db = storage.load('features')
+    feature = db.get(Query().name == feature_name)
+    return feature
+
+
+@main.command(name='get-repo')
+@click.argument('REPO_NAME')
+@jsonify_option
+def get_repo(repo_name, jsonify):
+    """Retrieve a repository's info
+    """
+    assert_repo_exists(repo_name)
+    repo = _get_repo(repo_name)
     if jsonify:
         click.echo(json.dumps(repo, indent=4, sort_keys=False))
     else:
         click.echo(_prettify_dict(repo))
+
+
+@main.command(name='get-feature')
+@click.argument('FEATURE_NAME')
+@jsonify_option
+def get_feature(feature_name, jsonify):
+    """Retrieve a repository's info
+    """
+    assert_feature_exists(feature_name)
+    feature = _get_feature(feature_name)
+    if jsonify:
+        click.echo(json.dumps(feature, indent=4, sort_keys=False))
+    else:
+        click.echo(_prettify_dict(feature))
 
 
 @main.command()
@@ -305,8 +349,80 @@ def status(repo_name):
     """Print out the status of all repositories or for specific tags/feature
     """
     db = storage.load('repos')
-    path = db.get(Query().name == repo_name)['path']
+    query = Query().name == repo_name
+    assert_repo_exists(repo_name)
+    path = db.get(query)['path']
     click.echo(git.status(path))
+
+
+@main.command()
+@click.argument('FEATURE_NAME')
+@click.option('-r',
+              '--repo',
+              multiple=True,
+              help="Repository to add to the feature")
+@click.option('-b',
+              '--base-branch',
+              default='master',
+              help="Branch to checkout from")
+@click.option('--no-pull',
+              is_flag=True,
+              default=False,
+              help="Pull base branch on all repos first")
+def create(feature_name, repo, base_branch, no_pull):
+    # TODO: add_missing should allow to add missing repos automatically
+    db = storage.load('features')
+    # TODO: Don't allow to create a feautre if it already exists
+    repos = repo
+    for repo in repos:
+        # TODO: Summarize non-existing repos instead
+        assert_repo_exists(repo)
+    for repo in repos:
+        repo_path = _get_repo(repo)['path']
+        git.checkout(repo_path, base_branch, feature_name)
+    db.insert(dict(
+        name=feature_name,
+        repos=list(repos),
+        base_branch=base_branch))
+
+    db = storage.load('active')
+    if not db.get(eid=1):
+        db.insert(dict(active=feature_name))
+    else:
+        db.update(dict(active=feature_name), eids=[1])
+
+
+@main.command(name='add-repo')
+@click.argument('REPO_NAME', nargs=-1, required=True)
+@click.option('-f',
+              '--feature-name',
+              required=True,
+              help='Feature to add repo to')
+def add_repo(repo_name, feature_name):
+    """Add a repository or multiple repositories to a feature
+    """
+    assert_feature_exists(feature_name)
+    repos = list(repo_name)
+    for repo in repos:
+        assert_repo_exists(repo)
+    db = storage.load('features')
+    current_repos = _get_feature(feature_name)['repos']
+    current_repos.extend(repos)
+    current_repos = list(set(current_repos))
+    db.update(dict(repos=current_repos), Query().name == feature_name)
+
+
+@main.command(name='remove-repo')
+@click.argument('REPO_NAME')
+@click.option('-f',
+              '--feature-name',
+              required=True,
+              help='Feature to remove repo from')
+def remove_repo(repo_name, feature_name):
+    db = storage.load('features')
+    current_repos = _get_feature(feature_name)['repos']
+    current_repos.remove(repo_name)
+    db.update(dict(repos=current_repos), Query().name == feature_name)
 
 
 @main.command()

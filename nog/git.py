@@ -1,6 +1,21 @@
+import subprocess
+
 import sh
 import click
 from path import Path
+
+
+def run(command):
+    process = subprocess.Popen(
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE)
+    stdout, stderr = process.communicate()
+    stdout, stderr = stdout.decode('ascii'), stderr.decode('ascii')
+    process.stdout = stdout
+    process.stderr = stderr
+    return process
 
 
 def clone(source, destination):
@@ -13,9 +28,14 @@ def get_remote(source):
         return sh.git.config('--get', 'remote.origin.url').strip()
 
 
-def status(source):
+def checkout(source, base_branch, branch_name):
     with Path(source):
-        return sh.git.status('-s')
+        click.echo(sh.git.checkout(base_branch))
+        click.echo(sh.git.checkout('-b', branch_name))
+
+
+def status(source):
+    return run('git --work-tree {0} status -s'.format(source)).stdout.strip()
 
 
 def is_repo(source):
