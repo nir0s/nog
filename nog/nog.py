@@ -43,17 +43,52 @@
 # import os
 # import pkg_resources
 
+import os
+import sys
+import json
+from functools import wraps
+try:
+    from urllib.parse import urlparse
+except ImportError:
+    # python 2
+    from urlparse import urlparse
+
+
 import click
 from tinydb import Query
 
 # import nog
+from . import git
+# from . import runner
 from . import storage
+
+
+def assert_initialized(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if not is_initialized():
+            raise Exception('Please run `nog init` first')
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+jsonify_option = click.option(
+    '-j',
+    '--jsonify',
+    is_flag=True,
+    default=False,
+    help='Output in JSON instead')
 
 
 @click.group(name='nog')
 def main():
     """Nognog
     """
+
+
+def is_initialized():
+    return os.path.isfile(storage.NOG_FILE)
 
 
 @main.command()
@@ -73,27 +108,76 @@ def init():
     click.echo('Initialized {0}'.format(path))
 
 
+def _get_github_url(source):
+    source_parts = source.split(':', 1)
+    repo = source_parts[0]
+    tag = source_parts[1] if len(source_parts) == 2 else 'master'
+    url = 'https://github.com/{0}/archive/{1}.tar.gz'.format(repo, tag)
+    return url
+
+
 @main.command()
 @click.argument('SOURCE')
-@click.option('-n',
-              '--name',
-              help="The repository's name")
 @click.option('-t',
               '--tag',
               multiple=True,
               help="A tag to assign to the repo")
-def add(source, name, tag):
+@assert_initialized
+def add(source, tag):
     """Add a single or multiple repositories to manage
+
+    if source is full url to repo, get its name, clone it* and add it
+    if source is a cutout github path, check if it's local and a repo.
+        if it's local and a repo, get its name and org and add it
+        if it's local and not, clone it and add it
     """
-    name = name or _get_repo_name(source)
-    db = storage.load()
-    repos = db.table('repos')
-    repos.insert({'name': name, 'source': source, 'tags': list(tag)})
+    # TODO: Validate that the repo is accessible before adding it
+    # TODO: Allow to clone to another destination
+    name = _get_repo_name(source)
+    storage.init()
+    db = storage.load('repos')
+    existing = db.search((Query().name == name) | (Query().source == source))
+    if existing:
+        raise Exception(
+            'Repo with name {0} or source {1} already exists.'.format(
+                name, source))
+    repo_path = os.path.join(storage.NOG_HOME, name)
+    if '://' in source or (not os.path.isdir(source) and '/' in source):
+        if '://' not in source:
+            source = 'git@github.com:{0}.git'.format(source)
+        if not os.path.isdir(repo_path):
+            git.clone(source, repo_path)
+        source = repo_path
+    elif os.path.isdir(source) and git.is_repo(source):
+        source = os.path.abspath(source)
+    url = git.get_remote(source)
+    repo = dict(name=name, path=source, tags=list(tag), origin=url)
+    db.insert(repo)
     click.echo('Added repository {0}'.format(source))
 
 
+@main.command()
+@click.argument('REPO_NAME')
+def remove(repo_name):
+    """Start a workflow
+    """
+    db = storage.load('repos')
+    query = Query().name == repo_name
+    repo = db.get(query)
+    if not repo:
+        sys.exit('Repo {0} does not exist'.format(repo_name))
+    db.remove(query)
+
+
 def _get_repo_name(source):
-    return
+    if '://' in source:
+        name = urlparse(source).path
+    elif os.path.isdir(source):
+        remote_origin = git.get_remote(source)
+        name = urlparse(remote_origin).path
+    elif '/' in source:
+        name = source
+    return name
 
 
 @main.command()
@@ -106,11 +190,10 @@ def tag(repo_name, tag):
     """Tag a single or multiple repositories managed by nog
     """
     db = storage.load('repos')
-    repo = Query()
-    db.update({'tags': list(tag)}, repo.name == repo_name)
+    db.update({'tags': list(tag)}, Query().name == Query())
 
 
-def _prettify_list(items):
+def _prettify_list(items, title='Repos:'):
     """Return a human readable format of a list.
 
     Example:
@@ -121,10 +204,45 @@ def _prettify_list(items):
     """
     assert isinstance(items, list)
 
-    keys_list = 'Available Keys:'
+    keys_list = title
     for item in items:
         keys_list += '\n  - {0}'.format(item)
     return keys_list
+
+
+def _prettify_dict(key, key_space_prefix=0, key_space_suffix=0):
+    """Return a human readable format of a key (dict).
+
+    Example:
+
+    Description:   My Wonderful Key
+    Uid:           a54d6de1-922a-4998-ad34-cb838646daaa
+    Created_At:    2016-09-15T12:42:32
+    Metadata:      owner=me;
+    Modified_At:   2016-09-15T12:42:32
+    Value:         secret_key=my_secret_key;access_key=my_access_key
+    Name:          aws
+    """
+    assert isinstance(key, dict)
+
+    key_space_prefix = ' ' * key_space_prefix
+    key_space_suffix = ' ' * key_space_suffix
+
+    pretty_key = ''
+    for key, value in key.items():
+        if isinstance(value, dict):
+            pretty_value = ''
+            for k, v in value.items():
+                pretty_value += '{0}={1};'.format(k, v)
+            value = pretty_value
+        elif isinstance(value, list):
+            value = ', '.join(value) if value else 'null'
+        pretty_key += '{0}{1:15}{2}\n{3}'.format(
+            key_space_prefix,
+            key.title() + ':',
+            value,
+            key_space_suffix)
+    return pretty_key
 
 
 @main.command(name='list')
@@ -133,13 +251,25 @@ def _list():
     """
     db = storage.load('repos')
     repos = db.search(Query().name.matches('.*'))
+    if not repos:
+        click.echo('You did not add any repositories')
+        sys.exit(0)
+    repos = [_prettify_dict(repo, 0, 4) for repo in repos]
     click.echo(_prettify_list(repos))
 
 
-@main.command()
-def clone():
-    """Clone all repositories or for specific tags
+@main.command(name='get')
+@click.argument('REPO_NAME')
+@jsonify_option
+def _get(repo_name, jsonify):
+    """Retrieve a repository's info
     """
+    db = storage.load('repos')
+    repo = db.get(Query().name == repo_name)
+    if jsonify:
+        click.echo(json.dumps(repo, indent=4, sort_keys=False))
+    else:
+        click.echo(_prettify_dict(repo))
 
 
 @main.command()
@@ -149,15 +279,25 @@ def pull():
 
 
 @main.command()
-def status():
+@click.argument('REPO_NAME', required=False)
+def status(repo_name):
     """Print out the status of all repositories or for specific tags/feature
     """
+    db = storage.load('repos')
+    path = db.get(Query().name == repo_name)['path']
+    click.echo(git.status(path))
 
 
 @main.command()
-def work():
+@click.argument('FEATURE_NAME')
+def work(feature_name):
     """Start a workflow
     """
+    db = storage.load('active')
+    if not db.get(eid=1):
+        db.insert(dict(active=feature_name))
+    else:
+        db.update(dict(active=feature_name), eids=[1])
 
 
 @main.command()
@@ -190,7 +330,7 @@ def stop():
     """
 
 
-@main.command()
-def advance():
+@main.command(name='next')
+def _next():
     """Advance a single step in a workflow
     """

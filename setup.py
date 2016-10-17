@@ -25,6 +25,7 @@ setup(
     install_requires=[
         "click==6.6",
         "tinydb==3.2.1",
+        "path.py==8.2.1",
     ],
     extras_require={},
     classifiers=[

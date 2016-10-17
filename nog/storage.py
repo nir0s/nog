@@ -2,9 +2,12 @@ import os
 
 from tinydb import TinyDB, Query
 
+NOG_HOME = os.path.join(os.path.expanduser('~'), '.nog')
+NOG_FILE = os.path.join(NOG_HOME, 'nog.json')
+
 
 class TinyDBStorage(object):
-    def __init__(self, db_path='~/.nog/nog.json'):
+    def __init__(self, db_path=NOG_FILE):
         self.db_path = os.path.expanduser(db_path)
         self._db = None
 
