@@ -108,24 +108,27 @@ def init():
     click.echo('Initialized {0}'.format(path))
 
 
-def _get_github_url(source):
-    source_parts = source.split(':', 1)
-    repo = source_parts[0]
-    tag = source_parts[1] if len(source_parts) == 2 else 'master'
-    url = 'https://github.com/{0}/archive/{1}.tar.gz'.format(repo, tag)
-    return url
-
-
 @main.command()
 @click.argument('SOURCE')
 @click.option('-t',
               '--tag',
               multiple=True,
               help="A tag to assign to the repo")
+@click.option('--method',
+              type=click.Choice(['ssh', 'https']),
+              default='ssh',
+              help="Method to use when cloning repositories")
 @assert_initialized
-def add(source, tag):
+def add(source, tag, method):
     """Add a single or multiple repositories to manage
 
+    \b
+    SOURCE can be one of:
+     * A path to a local repo
+     * A repo URL in the form of git@github:org/repo.git
+     * A repo URL in the form of https://github.com/org/repo
+     * An org/repo string.
+    \b
     if source is full url to repo, get its name, clone it* and add it
     if source is a cutout github path, check if it's local and a repo.
         if it's local and a repo, get its name and org and add it
@@ -133,27 +136,56 @@ def add(source, tag):
     """
     # TODO: Validate that the repo is accessible before adding it
     # TODO: Allow to clone to another destination
-    name = _get_repo_name(source)
-    storage.init()
     db = storage.load('repos')
+
+    click.echo('Analyzing source {0}'.format(source))
+    source = os.path.expanduser(source)
+    if '://' or 'git@' in source:
+        name = _get_name_from_git_url(source)
+        repo_path = os.path.join(storage.NOG_HOME, name)
+    elif os.path.isdir(source):
+        if git.is_repo(source):
+            url = git.get_remote(source)
+            name = _get_name_from_git_url(url)
+            repo_path = os.path.abspath(source)
+        else:
+            # TODO: Deal with an existing path which is not a repository
+            # and thus should be cloned
+            raise
+    elif not os.path.isdir(source):
+        if '/' in source:
+            name = source
+            repo_path = os.path.join(storage.NOG_HOME, name)
+            if method == 'ssh':
+                source = 'git@github.com:{0}.git'.format(source)
+            else:
+                source = 'https://github.com/{0}.git'.format(source)
+        else:
+            raise
+
     existing = db.search((Query().name == name) | (Query().source == source))
     if existing:
         raise Exception(
             'Repo with name {0} or source {1} already exists.'.format(
                 name, source))
-    repo_path = os.path.join(storage.NOG_HOME, name)
-    if '://' in source or (not os.path.isdir(source) and '/' in source):
-        if '://' not in source:
-            source = 'git@github.com:{0}.git'.format(source)
-        if not os.path.isdir(repo_path):
-            git.clone(source, repo_path)
-        source = repo_path
-    elif os.path.isdir(source) and git.is_repo(source):
-        source = os.path.abspath(source)
-    url = git.get_remote(source)
-    repo = dict(name=name, path=source, tags=list(tag), origin=url)
+
+    if not os.path.isdir(repo_path):
+        # TODO: clean if repo wasn't found as there will be org dir leftovers.
+        git.clone(source, repo_path)
+    url = git.get_remote(repo_path)
+
+    repo = dict(name=name, path=repo_path, tags=list(tag), origin=url)
     db.insert(repo)
     click.echo('Added repository {0}'.format(source))
+
+
+def _get_name_from_git_url(source):
+    if '://' in source:
+        return os.path.splitext(urlparse(source).path.lstrip('/'))[0]
+    elif 'git@' in source:
+        return os.path.splitext(source.split(':')[1])[0]
+    else:
+        raise Exception('{0} is not a valid url'.format(source))
 
 
 @main.command()
@@ -167,17 +199,6 @@ def remove(repo_name):
     if not repo:
         sys.exit('Repo {0} does not exist'.format(repo_name))
     db.remove(query)
-
-
-def _get_repo_name(source):
-    if '://' in source:
-        name = urlparse(source).path
-    elif os.path.isdir(source):
-        remote_origin = git.get_remote(source)
-        name = urlparse(remote_origin).path
-    elif '/' in source:
-        name = source
-    return name
 
 
 @main.command()

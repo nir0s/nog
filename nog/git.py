@@ -20,5 +20,8 @@ def status(source):
 
 def is_repo(source):
     with Path(source):
-        is_repo = sh.git.rev_parse()
-        raise Exception(is_repo)
+        try:
+            sh.git('rev-parse')
+            return True
+        except:
+            return False
