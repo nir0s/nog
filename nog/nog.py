@@ -379,7 +379,7 @@ def create(feature_name, repo, base_branch, no_pull):
         assert_repo_exists(repo)
     for repo in repos:
         repo_path = _get_repo(repo)['path']
-        git.checkout(repo_path, base_branch, feature_name)
+        git.checkout(repo_path, feature_name, base_branch, new=True)
     db.insert(dict(
         name=feature_name,
         repos=list(repos),
@@ -435,6 +435,12 @@ def work(feature_name):
         db.insert(dict(active=feature_name))
     else:
         db.update(dict(active=feature_name), eids=[1])
+
+    db = storage.load('features')
+    repos = _get_feature(feature_name)['repos']
+    for repo in repos:
+        repo_path = _get_repo(repo)['path']
+        git.checkout(repo_path, feature_name)
 
 
 @main.command()

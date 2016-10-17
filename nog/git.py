@@ -28,10 +28,13 @@ def get_remote(source):
         return sh.git.config('--get', 'remote.origin.url').strip()
 
 
-def checkout(source, base_branch, branch_name):
+def checkout(source, branch_name, base_branch, new=False):
     with Path(source):
-        click.echo(sh.git.checkout(base_branch))
-        click.echo(sh.git.checkout('-b', branch_name))
+        if new:
+            click.echo(sh.git.checkout(base_branch))
+            click.echo(sh.git.checkout('-b', branch_name))
+        else:
+            click.echo(sh.git.checkout(branch_name))
 
 
 def status(source):
